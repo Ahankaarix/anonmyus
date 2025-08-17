@@ -62,14 +62,16 @@ function containsBlockedWords(text) {
 
 // Create terminal-style anonymous message
 function createTerminalAnonymousMessage(content) {
-    const userId = generateUserId();
-    return `\`\`\`ansi\n\u001b[32mC:\\System\\chat> ${userId}: ${content}\n\`\`\``;
+    const userId = generateAnonUserId();
+    return `\`\`\`ansi\n\u001b[32m[USER] :: ${userId}: ${content}\n\`\`\``;
 }
 
-// Generate automatic user ID
-function generateUserId() {
-    const userNumber = Math.floor(Math.random() * 999) + 1;
-    return `user_${userNumber.toString().padStart(3, '0')}`;
+// Generate automatic anonymous user ID
+function generateAnonUserId() {
+    const prefixes = ['shadow', 'ghost', 'phantom', 'cipher', 'void', 'nexus', 'omega', 'alpha', 'delta', 'echo'];
+    const numbers = Math.floor(Math.random() * 999) + 1;
+    const prefix = prefixes[Math.floor(Math.random() * prefixes.length)];
+    return `${prefix}_${numbers.toString().padStart(3, '0')}`;
 }
 
 // In-memory storage for polls (in production, use a database)
@@ -166,22 +168,36 @@ async function clearChannelAndStartup() {
         // Send startup sequence with green color
         const startupMessages = [
             "```ansi",
-            "\u001b[32mC:\\System> initializing secure connection...",
-            "\u001b[32m[OK] Loading modules ██████████ 100%",
-            "\u001b[32m[OK] Establishing encrypted tunnel...",
-            "\u001b[32m[OK] Identity mask enabled",
-            "\u001b[32m[OK] Access level: ROOT",
+            "\u001b[32m[BOOT] >> Initializing secure connection...",
+            "\u001b[32m[BOOT] >> Handshake complete with NODE_001",
+            "\u001b[32m[SYS]  >> Loading core modules ██████████ 100%",
+            "\u001b[32m[NET]  >> Encrypted tunnel established [TLS v3.9]",
+            "\u001b[32m[ID]   >> Identity mask engaged :: Layer-256 active",
+            "\u001b[32m[SEC]  >> Firewall bypass injected... [SUCCESS]",
             "\u001b[32m",
-            "\u001b[32mC:\\System> login anonymous",
-            "\u001b[32mPassword: ********",
+            "\u001b[32m┌─────────────────────────────────────┐",
+            "\u001b[32m│   🔐  S E C U R E   L O G I N  v3.1 │",
+            "\u001b[32m└─────────────────────────────────────┘",
             "\u001b[32m",
-            "\u001b[32m[ACCESS GRANTED]",
+            "\u001b[32m[USER] :: ANONYMOUS",
+            "\u001b[32m[PASS] :: ********",
             "\u001b[32m",
-            "\u001b[32mC:\\System> launching secure chat...",
+            "\u001b[32m[AUTH] >> Authentication [VERIFIED]",
+            "\u001b[32m[AUTH] >> Access Level = ROOT",
             "\u001b[32m",
-            "\u001b[32m----------------------------------------",
-            "\u001b[32m   🔒  ANON CHATROOM v1.0  🔒",
-            "\u001b[32m----------------------------------------",
+            "\u001b[32m┌─────────────────────────────────────┐",
+            "\u001b[32m│   W E L C O M E   B A C K ,         │",
+            "\u001b[32m│   A N O N Y M O U S   O P E R A T I V E │",
+            "\u001b[32m└─────────────────────────────────────┘",
+            "\u001b[32m",
+            "\u001b[32m[CHK] >> Running system diagnostics...",
+            "\u001b[32m        ▸ Proxy Chain [OK]",
+            "\u001b[32m        ▸ VPN Multi-Layer [OK]",
+            "\u001b[32m        ▸ Spoof Engine [ACTIVE]",
+            "\u001b[32m        ▸ Traceback : NULL",
+            "\u001b[32m",
+            "\u001b[32m[SYS]  >> Initialization ██████████ 100%",
+            "\u001b[32m[ACCESS] >> GRANTED :: SESSION OPENED",
             "```"
         ];
         
