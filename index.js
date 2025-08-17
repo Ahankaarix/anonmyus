@@ -122,15 +122,12 @@ if (!token) {
     console.log("🔗 Get your token from: https://discord.com/developers/applications");
 }
 
-// Create Discord client with minimal intents
+// Create Discord client with basic intents only
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds, 
-        GatewayIntentBits.GuildMessages, 
-        GatewayIntentBits.DirectMessages,
-        GatewayIntentBits.MessageContent
-    ],
-    partials: [Partials.Channel, Partials.Message] // for DM permissions
+        GatewayIntentBits.GuildMessages
+    ]
 });
 
 // Function to clear channel and send startup sequence
