@@ -1,0 +1,1516 @@
+import express from "express";
+import { config } from "dotenv";
+import { Client, GatewayIntentBits, Events, Partials, SlashCommandBuilder, REST, Routes, AttachmentBuilder } from "discord.js";
+import getAvatar from "./avatar.js";
+import { v4 as uuidv4 } from 'uuid';
+import pkg from 'pg';
+const { Pool } = pkg;
+
+// Database connection
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+});
+
+// Database helper functions
+async function executeQuery(query, params = []) {
+  const client = await pool.connect();
+  try {
+    const result = await client.query(query, params);
+    return result;
+  } finally {
+    client.release();
+  }
+}
+
+// Load environment variables
+config();
+
+const app = express();
+
+// Environment variables
+const anonymousChannel = process.env.ANONYMOUS_CHANNEL || "1406547609996361869";
+const roleName = process.env.ROLE_NAME || "Admin";
+const allowedRoleId = process.env.ALLOWED_ROLE_ID || "1384805029369876561"; // Role that can send anonymous messages
+const adminRoleId = process.env.ADMIN_ROLE_ID || "1210529711843708929"; // Role that can send announcements
+const modChannel = process.env.MOD_CHANNEL || "1406548297002258462"; // Default log channel
+const applicationChannel = "1406725485831913545"; // Applications review channel
+const auctionChannel = process.env.AUCTION_CHANNEL || anonymousChannel; // Auction listings channel
+const token = process.env.DISCORD_BOT_TOKEN;
+
+// Blocked words list - profanity filter
+const blockedWords = [
+    "fuck", "fuk", "fck", "fukkk", "f.u.c.k", "fucc", "fuxk",
+    "shit", "sh1t", "sh!t", "shet", "shyt",
+    "bitch", "b!tch", "bi7ch", "btch", "bich",
+    "asshole", "a$$hole", "azzhole", "ashole",
+    "dick", "d1ck", "dik", "diq", "deek",
+    "cock", "c0ck", "cok", "coq",
+    "pussy", "pussi", "pusy", "p00sy",
+    "bastard", "bastrad", "ba$tard", "bstard",
+    "slut", "slutt", "sl@t", "slutty",
+    "whore", "whoar", "w.h.o.r.e", "h0e", "hoe",
+    "faggot", "f@g", "fa66ot", "phag", "fag",
+    "cunt", "c*nt", "cnt", "kunt",
+    "nigger", "n1gger", "nigg3r", "nigga", "niga",
+    "motherfucker", "m0therfuker", "muthafucka", "mf", "m.f.",
+    "madarchod", "m@darchod", "m4darchod", "m.c.", "mc",
+    "behenchod", "bhenchod", "bhnchod", "b.c.", "bc",
+    "chutiya", "chutya", "chutia", "ch@tiya", "chut",
+    "gandu", "gaandu", "g@ndu", "g4ndu",
+    "randi", "r@ndi", "raandi",
+    "launda", "lund", "l0nd", "lundd",
+    "lavda", "lawda", "laveda",
+    "suar", "sooar", "suwar", "swr",
+    "kutta", "kutti", "kuttiya", "kutte", "kutt@",
+    "harami", "haramzade", "haramzada",
+    "bhosdike", "bhosri", "bhosda", "bhosriwala",
+    "chodu", "chod", "chodna", "chodenge",
+    "tatti", "t@tti", "tatty",
+    "gaand", "gand", "g@nd", "g4and",
+    "चूतिया", "चुतिया",
+    "मादरचोद",
+    "भोसडीके", "bhosdi", "bhdke",
+    "गांड", "g@and", "g*and",
+    "रंडी", "rnd",
+    "साला", "sl@", "saala",
+    "lora", "लोड़ा", "l@ra", "l0ra",
+    "jatha", "जाठा", "j@tha", "jth",
+    "randiko", "रंडीको", "r@ndiko",
+    "bhosdika", "भोसडीका",
+    "傻逼", "煞笔", "sb", "sha bi", "shabi", "sh@bi",
+    "妈的", "他妈的", "md", "tm", "tamade",
+    "操你妈", "c nm", "cao ni ma", "c@onima",
+    "滚开", "gun", "g@un",
+    "王八蛋", "wbd", "wangba dan"
+];
+
+// Function to check for blocked words
+function containsBlockedWords(text) {
+    const lowerText = text.toLowerCase();
+    return blockedWords.some(word => {
+        const lowerWord = word.toLowerCase();
+        // Check for exact word matches and words with boundaries
+        const regex = new RegExp(`\\b${lowerWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+        return regex.test(lowerText) || lowerText.includes(lowerWord);
+    });
+}
+
+// Create terminal-style anonymous message
+function createTerminalAnonymousMessage(content) {
+    const userId = generateUserId();
+    return `\`\`\`ansi\n\u001b[32mC:\\System\\chat> ${userId}: ${content}\n\`\`\``;
+}
+
+// Generate automatic user ID
+function generateUserId() {
+    const userNumber = Math.floor(Math.random() * 999) + 1;
+    return `user_${userNumber.toString().padStart(3, '0')}`;
+}
+
+// In-memory storage for polls (in production, use a database)
+const activePolls = new Map();
+const userVotes = new Map(); // Track user votes to prevent duplicate voting
+
+// Security monitoring
+const securityLogs = new Map();
+const rateLimits = new Map(); // Rate limiting for security
+
+// Enhanced security check
+function checkSecurityThreat(message, userId) {
+    const suspiciousPatterns = [
+        /discord\.gg\/[a-zA-Z0-9]+/i, // Discord invite links
+        /http[s]?:\/\/(?!paypal\.me)/i, // External links (except PayPal)
+        /@everyone|@here/i, // Mass mentions
+        /\b(hack|exploit|ddos|bot|spam)\b/i, // Suspicious keywords
+        /(.)\1{10,}/i // Character spam
+    ];
+    
+    const now = Date.now();
+    const userRate = rateLimits.get(userId) || { count: 0, timestamp: now };
+    
+    // Rate limiting check (max 5 messages per minute)
+    if (now - userRate.timestamp < 60000) {
+        userRate.count++;
+        if (userRate.count > 5) {
+            return { threat: true, reason: 'Rate limit exceeded' };
+        }
+    } else {
+        userRate.count = 1;
+        userRate.timestamp = now;
+    }
+    rateLimits.set(userId, userRate);
+    
+    // Pattern matching
+    for (const pattern of suspiciousPatterns) {
+        if (pattern.test(message)) {
+            return { threat: true, reason: 'Suspicious content detected' };
+        }
+    }
+    
+    return { threat: false };
+}
+
+// Create terminal-style message format
+function createTerminalMessage(avatar, messageStamp, content) {
+    const userId = generateUserId();
+    return `\`\`\`ansi\n\u001b[32mC:\\System\\chat> ${userId}: ${content}\n\`\`\``;
+}
+
+// Validate required environment variables
+if (!token) {
+    console.log("❌ Please set DISCORD_BOT_TOKEN environment variable");
+    process.exit(1);
+}
+
+// Create Discord client with minimal intents
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds, 
+        GatewayIntentBits.GuildMessages, 
+        GatewayIntentBits.DirectMessages
+    ],
+    partials: [Partials.Channel, Partials.Message] // for DM permissions
+});
+
+// Function to clear channel and send startup sequence
+async function clearChannelAndStartup() {
+    try {
+        const anonChannel = await client.channels.fetch(anonymousChannel);
+        
+        // Clear all messages in the channel (bot restart = clean slate)
+        let fetched;
+        do {
+            fetched = await anonChannel.messages.fetch({ limit: 100 });
+            if (fetched.size > 0) {
+                // Filter messages that can be bulk deleted (less than 14 days old)
+                const bulkDeletable = fetched.filter(msg => msg.createdTimestamp > Date.now() - 1209600000);
+                const oldMessages = fetched.filter(msg => msg.createdTimestamp <= Date.now() - 1209600000);
+                
+                // Bulk delete recent messages
+                if (bulkDeletable.size > 0) {
+                    await anonChannel.bulkDelete(bulkDeletable);
+                }
+                
+                // Delete old messages individually
+                for (const [id, message] of oldMessages) {
+                    try {
+                        await message.delete();
+                        await new Promise(resolve => setTimeout(resolve, 100)); // Rate limit protection
+                    } catch (err) {
+                        console.log(`Could not delete message ${id}: ${err.message}`);
+                    }
+                }
+            }
+        } while (fetched.size >= 100);
+        
+        console.log('✅ Anonymous channel cleared successfully');
+        
+        // Send startup sequence with green color
+        const startupMessages = [
+            "```ansi",
+            "\u001b[32mC:\\System> initializing secure connection...",
+            "\u001b[32m[OK] Loading modules ██████████ 100%",
+            "\u001b[32m[OK] Establishing encrypted tunnel...",
+            "\u001b[32m[OK] Identity mask enabled",
+            "\u001b[32m[OK] Access level: ROOT",
+            "\u001b[32m",
+            "\u001b[32mC:\\System> login anonymous",
+            "\u001b[32mPassword: ********",
+            "\u001b[32m",
+            "\u001b[32m[ACCESS GRANTED]",
+            "\u001b[32m",
+            "\u001b[32mC:\\System> launching secure chat...",
+            "\u001b[32m",
+            "\u001b[32m----------------------------------------",
+            "\u001b[32m   🔒  ANON CHATROOM v1.0  🔒",
+            "\u001b[32m----------------------------------------",
+            "```"
+        ];
+        
+        // Send startup sequence as one message
+        await anonChannel.send(startupMessages.join('\n'));
+        console.log('✅ Startup sequence sent to anonymous channel');
+        
+    } catch (error) {
+        console.error('❌ Error clearing channel and sending startup sequence:', error.message);
+    }
+}
+
+// Bot ready event
+client.once(Events.ClientReady, async () => {
+    console.log(`✅ Bot is online as ${client.user.tag}`);
+    console.log(`📡 Anonymous channel: ${anonymousChannel}`);
+    if (modChannel) console.log(`🛡️ Mod channel: ${modChannel}`);
+    if (roleName) console.log(`👤 Protected role: ${roleName}`);
+    if (allowedRoleId) console.log(`🔑 Required role ID: ${allowedRoleId}`);
+    if (adminRoleId) console.log(`👑 Admin role ID: ${adminRoleId}`);
+    
+    // Clear channel and send startup sequence
+    await clearChannelAndStartup();
+    
+    // Register slash commands
+    await registerSlashCommands();
+});
+
+// Message handling
+client.on(Events.MessageCreate, async (message) => {
+    try {
+        // Ignore bot messages
+        if (message.author.bot) return;
+
+        const channel = message.channel;
+        const randomId = Math.floor(Math.random() * 100000);
+        const date = new Date();
+        const messageStamp = "#" + randomId + " " + date.toLocaleDateString();
+        const messageContent = message.content || "[Message content unavailable]";
+
+        // Handle DM messages
+        if (channel.type === 1) {
+            await handleDmMessage(message, messageStamp);
+            return;
+        }
+
+        // Handle commands in any channel
+        if (messageContent.startsWith('!')) {
+            await handleCommand(message, messageStamp);
+            return;
+        }
+
+        // Check for @anon pattern for simple anonymous messages in any channel
+        if (messageContent.toLowerCase().startsWith('@anon ')) {
+            const username = message.author.username || "Unknown User";
+            const anonMessage = messageContent.substring(6).trim(); // Remove "@anon " prefix
+            
+            if (!anonMessage) {
+                await message.reply("❌ Please provide a message after @anon");
+                return;
+            }
+
+            // Enhanced security and content checks
+            const securityCheck = checkSecurityThreat(anonMessage, message.author.id);
+            if (securityCheck.threat) {
+                await message.reply(`🛡️ Security Alert: ${securityCheck.reason}. Message blocked for safety.`);
+                
+                // Log security incident
+                try {
+                    const logChannel = await client.channels.fetch(modChannel);
+                    await logChannel.send(`**🚨 SECURITY ALERT**\nUser: ${username} (${message.author.id})\nThreat: ${securityCheck.reason}\nTimestamp: ${new Date().toLocaleString()}\nBlocked Content: ${anonMessage}`);
+                } catch (error) {
+                    console.error('❌ Error logging security incident:', error.message);
+                }
+                return;
+            }
+
+            // Check for blocked words
+            if (containsBlockedWords(anonMessage)) {
+                await message.reply("❌ Message blocked due to inappropriate language. Please avoid using offensive words.");
+                
+                // Log abuse attempt
+                try {
+                    const logChannel = await client.channels.fetch(modChannel);
+                    await logChannel.send(`**🚫 BLOCKED @ANON MESSAGE**\nUser: ${username} (${message.author.id})\nTimestamp: ${new Date().toLocaleString()}\nReason: Inappropriate language detected\nFrom Channel: #${message.channel.name} (${message.channel.id})\nBlocked Content: ${anonMessage}`);
+                } catch (error) {
+                    console.error('❌ Error logging blocked @anon message:', error.message);
+                }
+                return;
+            }
+
+            // Check if user has the required role to send anonymous messages
+            if (allowedRoleId && !message.member?.roles.cache.has(allowedRoleId)) {
+                await message.reply("❌ You don't have permission to send anonymous messages.");
+                return;
+            }
+
+            // Check if user has protected role
+            if (roleName && message.member?.roles.cache.some((role) => role.name === roleName)) {
+                await message.reply("❌ Users with the admin role cannot send anonymous messages.");
+                return;
+            }
+
+            // Delete the original message
+            try {
+                await message.delete();
+            } catch (error) {
+                console.log('Could not delete original message');
+            }
+
+            // Send terminal-style anonymous message to anonymous channel
+            try {
+                const anonChannel = await client.channels.fetch(anonymousChannel);
+                const terminalMessage = createTerminalAnonymousMessage(anonMessage);
+                await anonChannel.send(terminalMessage);
+
+                // Log to mod channel
+                try {
+                    const logChannel = await client.channels.fetch(modChannel);
+                    await logChannel.send(`**📝 ANONYMOUS MESSAGE LOG**\nUser: ${username} (${message.author.id})\n${messageStamp}\nFrom Channel: #${message.channel.name} (${message.channel.id})\nMessage: ${anonMessage}`);
+                } catch (error) {
+                    console.error('❌ Error logging @anon message:', error.message);
+                }
+            } catch (error) {
+                console.error('❌ Error sending anonymous message:', error.message);
+                await message.reply("❌ Could not send anonymous message. Please try again.");
+            }
+
+            return;
+        }
+
+        // Only process messages in the anonymous channel
+        if (channel.id !== anonymousChannel) return;
+        
+        // Check if user has the required role to send anonymous messages
+        if (allowedRoleId && !message.member?.roles.cache.has(allowedRoleId)) {
+            await message.reply("❌ You don't have permission to send anonymous messages in this channel.");
+            return;
+        }
+
+        // Check if user has protected role (admins can't send anonymous messages)
+        if (roleName && message.member?.roles.cache.some((role) => role.name === roleName)) {
+            await message.reply("❌ Users with the admin role cannot send anonymous messages.");
+            return;
+        }
+
+        await handleChannelMessage(channel, message, messageStamp);
+    } catch (error) {
+        console.error('❌ Error in message handler:', error.message);
+    }
+});
+
+// Handle slash commands
+client.on(Events.InteractionCreate, async (interaction) => {
+    if (!interaction.isChatInputCommand()) return;
+
+    const { commandName } = interaction;
+
+    try {
+        if (commandName === 'anon') {
+            await handleAnonCommand(interaction);
+        } else if (commandName === 'poll') {
+            await handlePollCommand(interaction);
+        } else if (commandName === 'vote') {
+            await handleVoteCommand(interaction);
+        } else if (commandName === 'pollresults') {
+            await handlePollResultsCommand(interaction);
+        } else if (commandName === 'announcement') {
+            await handleAnnouncementCommand(interaction);
+        } else if (commandName === 'paypal') {
+            await handlePaypalCommand(interaction);
+        } else if (commandName === 'qr') {
+            await handleQRCommand(interaction);
+        } else if (commandName === 'apply') {
+            await handleApplyCommand(interaction);
+        } else if (commandName === 'sell') {
+            await handleSellCommand(interaction);
+        } else if (commandName === 'bid') {
+            await handleBidCommand(interaction);
+        } else if (commandName === 'approve') {
+            await handleApproveCommand(interaction);
+        } else if (commandName === 'deny') {
+            await handleDenyCommand(interaction);
+        }
+    } catch (error) {
+        console.error('❌ Error handling slash command:', error.message);
+        if (!interaction.replied) {
+            await interaction.reply({ content: "❌ An error occurred while processing your command.", flags: 64 });
+        }
+    }
+});
+
+// Handle DM messages
+async function handleDmMessage(message, messageStamp) {
+    try {
+        const username = message.author.username || "Unknown User";
+        const messageContent = message.content || "[Message content unavailable]";
+        
+        // Enhanced security check for DMs
+        const securityCheck = checkSecurityThreat(messageContent, message.author.id);
+        if (securityCheck.threat) {
+            await message.reply(`🛡️ Security Alert: ${securityCheck.reason}. Message blocked for safety.`);
+            
+            // Log security incident
+            try {
+                const logChannel = await client.channels.fetch(modChannel);
+                await logChannel.send(`**🚨 DM SECURITY ALERT**\nUser: ${username} (${message.author.id})\nThreat: ${securityCheck.reason}\nTimestamp: ${new Date().toLocaleString()}\nBlocked Content: ${messageContent}`);
+            } catch (error) {
+                console.error('❌ Error logging DM security incident:', error.message);
+            }
+            return;
+        }
+
+        // Check for blocked words in DMs
+        if (containsBlockedWords(messageContent)) {
+            await message.reply("❌ Message blocked due to inappropriate language. Please avoid using offensive words.");
+            
+            // Log abuse attempt
+            try {
+                const logChannel = await client.channels.fetch(modChannel);
+                await logChannel.send(`**🚫 BLOCKED DM MESSAGE**\nUser: ${username} (${message.author.id})\nTimestamp: ${new Date().toLocaleString()}\nReason: Inappropriate language detected\nBlocked Content: ${messageContent}`);
+            } catch (error) {
+                console.error('❌ Error logging blocked DM:', error.message);
+            }
+            return;
+        }
+
+        // Send terminal-style message to anonymous channel
+        const anonymousMessage = createTerminalAnonymousMessage(messageContent);
+        
+        const anonChannel = await client.channels.fetch(anonymousChannel);
+        await anonChannel.send(anonymousMessage);
+        
+        await message.reply("✅ Your message has been sent anonymously!");
+
+        // Log to mod channel
+        try {
+            const logChannel = await client.channels.fetch(modChannel);
+            await logChannel.send(`**📨 DM LOG**\nUser: ${username} (${message.author.id})\n${messageStamp}\nMessage: ${messageContent}`);
+        } catch (error) {
+            console.error('❌ Error logging DM:', error.message);
+        }
+    } catch (error) {
+        console.error('❌ Error handling DM:', error.message);
+        await message.reply("❌ Could not process your message. Please try again later.");
+    }
+}
+
+// Handle channel messages
+async function handleChannelMessage(channel, message, messageStamp) {
+    try {
+        const username = message.author.username || "Unknown User";
+        const messageContent = message.content || "[Message content unavailable]";
+        
+        // Check for blocked words
+        if (containsBlockedWords(messageContent)) {
+            await message.reply("❌ Message blocked due to inappropriate language. Please avoid using offensive words.");
+            
+            // Log abuse attempt
+            try {
+                const logChannel = await client.channels.fetch(modChannel);
+                await logChannel.send(`**🚫 BLOCKED CHANNEL MESSAGE**\nUser: ${username} (${message.author.id})\nTimestamp: ${new Date().toLocaleString()}\nChannel: #${channel.name} (${channel.id})\nReason: Inappropriate language detected\nBlocked Content: ${messageContent}`);
+            } catch (error) {
+                console.error('❌ Error logging blocked message:', error.message);
+            }
+            return;
+        }
+
+        // Delete the original message
+        try {
+            await message.delete();
+        } catch (error) {
+            console.log('Could not delete original message');
+        }
+
+        // Create terminal-style anonymous message
+        const anonymousMessage = createTerminalAnonymousMessage(messageContent);
+        
+        await channel.send(anonymousMessage);
+
+        // Log to mod channel
+        try {
+            const logChannel = await client.channels.fetch(modChannel);
+            await logChannel.send(`**📝 CHANNEL LOG**\nUser: ${username} (${message.author.id})\n${messageStamp}\nChannel: #${channel.name} (${channel.id})\nMessage: ${messageContent}`);
+        } catch (error) {
+            console.error('❌ Error logging channel message:', error.message);
+        }
+    } catch (error) {
+        console.error('❌ Error handling channel message:', error.message);
+    }
+}
+
+// Handle text commands
+async function handleCommand(message, messageStamp) {
+    const args = message.content.slice(1).split(' ');
+    const command = args.shift().toLowerCase();
+    
+    switch (command) {
+        case 'help':
+            await message.reply(`**Bot Commands:**
+• Send a DM to this bot to post anonymously
+• Use @anon <message> in any channel for quick anonymous posting
+• Use /anon <message> for slash command anonymous posting
+• Use /poll to create polls
+• Use /announcement for admin announcements
+
+**Rules:**
+• No inappropriate language
+• Anonymous messages are logged for moderation
+• Admins cannot send anonymous messages`);
+            break;
+            
+        case 'ping':
+            await message.reply(`🏓 Pong! Bot latency: ${client.ws.ping}ms`);
+            break;
+            
+        case 'paypal':
+            await message.reply(`💳 **PayPal Payment Link**\nhttps://paypal.me/DavidBarma`);
+            break;
+            
+        case 'qr':
+        case 'upi':
+            await message.reply(`📱 **UPI Payment ID**\ndavidbarma19-4@okicici`);
+            break;
+            
+        default:
+            await message.reply("❌ Unknown command. Use !help for available commands.");
+    }
+}
+
+// Register slash commands
+async function registerSlashCommands() {
+    const commands = [
+        new SlashCommandBuilder()
+            .setName('anon')
+            .setDescription('Send an anonymous message')
+            .addStringOption(option =>
+                option.setName('message')
+                    .setDescription('The message to send anonymously')
+                    .setRequired(true)),
+        
+        new SlashCommandBuilder()
+            .setName('poll')
+            .setDescription('Create a poll')
+            .addStringOption(option =>
+                option.setName('question')
+                    .setDescription('The poll question')
+                    .setRequired(true))
+            .addStringOption(option =>
+                option.setName('options')
+                    .setDescription('Poll options separated by commas (max 10)')
+                    .setRequired(true)),
+        
+        new SlashCommandBuilder()
+            .setName('vote')
+            .setDescription('Vote in a poll')
+            .addStringOption(option =>
+                option.setName('poll_id')
+                    .setDescription('The poll ID')
+                    .setRequired(true))
+            .addIntegerOption(option =>
+                option.setName('option')
+                    .setDescription('Option number to vote for')
+                    .setRequired(true)),
+        
+        new SlashCommandBuilder()
+            .setName('pollresults')
+            .setDescription('View poll results')
+            .addStringOption(option =>
+                option.setName('poll_id')
+                    .setDescription('The poll ID')
+                    .setRequired(true)),
+        
+        new SlashCommandBuilder()
+            .setName('announcement')
+            .setDescription('Send an announcement (Admin only)')
+            .addStringOption(option =>
+                option.setName('message')
+                    .setDescription('The announcement message')
+                    .setRequired(true)),
+        
+        new SlashCommandBuilder()
+            .setName('paypal')
+            .setDescription('Get PayPal payment link'),
+        
+        new SlashCommandBuilder()
+            .setName('qr')
+            .setDescription('Get UPI payment information'),
+        
+        new SlashCommandBuilder()
+            .setName('apply')
+            .setDescription('Apply as seller or buyer')
+            .addStringOption(option =>
+                option.setName('type')
+                    .setDescription('Apply as seller or buyer')
+                    .setRequired(true)
+                    .addChoices(
+                        { name: 'Seller', value: 'seller' },
+                        { name: 'Buyer', value: 'buyer' }
+                    ))
+            .addStringOption(option =>
+                option.setName('real_name')
+                    .setDescription('Your real full name')
+                    .setRequired(true))
+            .addStringOption(option =>
+                option.setName('citizen_id')
+                    .setDescription('Your citizen ID or SSN')
+                    .setRequired(true))
+            .addAttachmentOption(option =>
+                option.setName('profile_picture')
+                    .setDescription('Your profile picture')
+                    .setRequired(true)),
+        
+        new SlashCommandBuilder()
+            .setName('sell')
+            .setDescription('List an item for sale (sellers only)')
+            .addStringOption(option =>
+                option.setName('title')
+                    .setDescription('Item title')
+                    .setRequired(true))
+            .addStringOption(option =>
+                option.setName('description')
+                    .setDescription('Item description')
+                    .setRequired(true))
+            .addNumberOption(option =>
+                option.setName('starting_price')
+                    .setDescription('Starting price')
+                    .setRequired(true))
+            .addAttachmentOption(option =>
+                option.setName('image')
+                    .setDescription('Item image')
+                    .setRequired(true)),
+        
+        new SlashCommandBuilder()
+            .setName('bid')
+            .setDescription('Place a bid on an item (buyers only)')
+            .addStringOption(option =>
+                option.setName('item_id')
+                    .setDescription('Item ID to bid on')
+                    .setRequired(true))
+            .addNumberOption(option =>
+                option.setName('amount')
+                    .setDescription('Bid amount')
+                    .setRequired(true)),
+        
+        new SlashCommandBuilder()
+            .setName('approve')
+            .setDescription('Approve an application or item (Admin only)')
+            .addStringOption(option =>
+                option.setName('id')
+                    .setDescription('Application or item ID')
+                    .setRequired(true)),
+        
+        new SlashCommandBuilder()
+            .setName('deny')
+            .setDescription('Deny an application or item (Admin only)')
+            .addStringOption(option =>
+                option.setName('id')
+                    .setDescription('Application or item ID')
+                    .setRequired(true))
+            .addStringOption(option =>
+                option.setName('reason')
+                    .setDescription('Reason for denial')
+                    .setRequired(false))
+    ];
+
+    const rest = new REST({ version: '10' }).setToken(token);
+
+    try {
+        console.log('🔄 Registering slash commands...');
+        await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
+        console.log('✅ Slash commands registered successfully');
+    } catch (error) {
+        console.error('❌ Error registering slash commands:', error);
+    }
+}
+
+// Handle /anon slash command
+async function handleAnonCommand(interaction) {
+    const message = interaction.options.getString('message');
+    const username = interaction.user.username || "Unknown User";
+    
+    // Check for blocked words
+    if (containsBlockedWords(message)) {
+        await interaction.reply({ content: "❌ Message blocked due to inappropriate language. Please avoid using offensive words.", flags: 64 });
+        
+        // Log abuse attempt
+        try {
+            const logChannel = await client.channels.fetch(modChannel);
+            await logChannel.send(`**🚫 BLOCKED /ANON COMMAND**\nUser: ${username} (${interaction.user.id})\nTimestamp: ${new Date().toLocaleString()}\nReason: Inappropriate language detected\nBlocked Content: ${message}`);
+        } catch (error) {
+            console.error('❌ Error logging blocked /anon command:', error.message);
+        }
+        return;
+    }
+
+    // Check if user has the required role
+    if (allowedRoleId && !interaction.member?.roles.cache.has(allowedRoleId)) {
+        await interaction.reply({ content: "❌ You don't have permission to send anonymous messages.", flags: 64 });
+        return;
+    }
+
+    // Check if user has protected role
+    if (roleName && interaction.member?.roles.cache.some((role) => role.name === roleName)) {
+        await interaction.reply({ content: "❌ Users with the admin role cannot send anonymous messages.", flags: 64 });
+        return;
+    }
+
+    try {
+        const anonChannel = await client.channels.fetch(anonymousChannel);
+        const terminalMessage = createTerminalAnonymousMessage(message);
+        await anonChannel.send(terminalMessage);
+        
+        await interaction.reply({ content: "✅ Your anonymous message has been sent!", flags: 64 });
+
+        // Log to mod channel
+        try {
+            const logChannel = await client.channels.fetch(modChannel);
+            await logChannel.send(`**📝 /ANON COMMAND LOG**\nUser: ${username} (${interaction.user.id})\nTimestamp: ${new Date().toLocaleString()}\nMessage: ${message}`);
+        } catch (error) {
+            console.error('❌ Error logging /anon command:', error.message);
+        }
+    } catch (error) {
+        console.error('❌ Error sending anonymous message:', error.message);
+        await interaction.reply({ content: "❌ Could not send anonymous message. Please try again.", flags: 64 });
+    }
+}
+
+// Handle /poll slash command
+async function handlePollCommand(interaction) {
+    const question = interaction.options.getString('question');
+    const optionsString = interaction.options.getString('options');
+    const options = optionsString.split(',').map(opt => opt.trim()).filter(opt => opt.length > 0);
+    
+    if (options.length < 2) {
+        await interaction.reply({ content: "❌ Please provide at least 2 options separated by commas.", flags: 64 });
+        return;
+    }
+    
+    if (options.length > 10) {
+        await interaction.reply({ content: "❌ Maximum 10 options allowed.", flags: 64 });
+        return;
+    }
+    
+    const pollId = Math.random().toString(36).substring(7);
+    const poll = {
+        id: pollId,
+        question: question,
+        options: options,
+        votes: new Array(options.length).fill(0),
+        creator: interaction.user.id,
+        createdAt: new Date()
+    };
+    
+    activePolls.set(pollId, poll);
+    
+    let pollMessage = `**📊 POLL: ${question}**\n\n`;
+    options.forEach((option, index) => {
+        pollMessage += `${index + 1}. ${option}\n`;
+    });
+    pollMessage += `\nUse \`/vote ${pollId} <option_number>\` to vote`;
+    pollMessage += `\nPoll ID: \`${pollId}\``;
+    
+    await interaction.reply(pollMessage);
+}
+
+// Handle /vote slash command
+async function handleVoteCommand(interaction) {
+    const pollId = interaction.options.getString('poll_id');
+    const optionNumber = interaction.options.getInteger('option');
+    const userId = interaction.user.id;
+    
+    const poll = activePolls.get(pollId);
+    if (!poll) {
+        await interaction.reply({ content: "❌ Poll not found.", flags: 64 });
+        return;
+    }
+    
+    if (optionNumber < 1 || optionNumber > poll.options.length) {
+        await interaction.reply({ content: `❌ Invalid option. Choose between 1 and ${poll.options.length}.`, flags: 64 });
+        return;
+    }
+    
+    const voteKey = `${pollId}_${userId}`;
+    if (userVotes.has(voteKey)) {
+        await interaction.reply({ content: "❌ You have already voted in this poll.", flags: 64 });
+        return;
+    }
+    
+    poll.votes[optionNumber - 1]++;
+    userVotes.set(voteKey, optionNumber);
+    
+    await interaction.reply({ content: `✅ Your vote for "${poll.options[optionNumber - 1]}" has been recorded!`, flags: 64 });
+}
+
+// Handle /pollresults slash command
+async function handlePollResultsCommand(interaction) {
+    const pollId = interaction.options.getString('poll_id');
+    
+    const poll = activePolls.get(pollId);
+    if (!poll) {
+        await interaction.reply({ content: "❌ Poll not found.", flags: 64 });
+        return;
+    }
+    
+    const totalVotes = poll.votes.reduce((sum, votes) => sum + votes, 0);
+    
+    let resultsMessage = `**📊 POLL RESULTS: ${poll.question}**\n\n`;
+    poll.options.forEach((option, index) => {
+        const votes = poll.votes[index];
+        const percentage = totalVotes > 0 ? ((votes / totalVotes) * 100).toFixed(1) : 0;
+        resultsMessage += `${index + 1}. ${option}: ${votes} votes (${percentage}%)\n`;
+    });
+    resultsMessage += `\nTotal votes: ${totalVotes}`;
+    resultsMessage += `\nPoll ID: \`${pollId}\``;
+    
+    await interaction.reply(resultsMessage);
+}
+
+// Handle /announcement slash command
+async function handleAnnouncementCommand(interaction) {
+    // Check if user has admin role
+    if (!interaction.member?.roles.cache.has(adminRoleId)) {
+        await interaction.reply({ content: "❌ You don't have permission to send announcements.", flags: 64 });
+        return;
+    }
+    
+    const message = interaction.options.getString('message');
+    const username = interaction.user.username || "Unknown User";
+    
+    try {
+        const announcement = `**📢 ANNOUNCEMENT**\n\n${message}\n\n*Sent by: ${username}*`;
+        await interaction.channel.send(announcement);
+        await interaction.reply({ content: "✅ Announcement sent!", flags: 64 });
+        
+        // Log announcement
+        try {
+            const logChannel = await client.channels.fetch(modChannel);
+            await logChannel.send(`**📢 ANNOUNCEMENT LOG**\nUser: ${username} (${interaction.user.id})\nTimestamp: ${new Date().toLocaleString()}\nChannel: #${interaction.channel.name} (${interaction.channel.id})\nAnnouncement: ${message}`);
+        } catch (error) {
+            console.error('❌ Error logging announcement:', error.message);
+        }
+    } catch (error) {
+        console.error('❌ Error sending announcement:', error.message);
+        await interaction.reply({ content: "❌ Could not send announcement. Please try again.", flags: 64 });
+    }
+}
+
+// Handle PayPal command
+async function handlePaypalCommand(interaction) {
+    const username = interaction.user.username || "Unknown User";
+    
+    try {
+        const paypalMessage = `\`\`\`ansi
+\u001b[32m💳 PAYMENT GATEWAY ACCESSED
+\u001b[32m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+\u001b[32m[SYSTEM] Secure PayPal connection established
+\u001b[32m[INFO] Payment Method: PayPal
+\u001b[32m[LINK] https://paypal.me/DavidBarma
+\u001b[32m[STATUS] Connection secure ✓
+\u001b[32m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+\`\`\``;
+        
+        await interaction.reply({ content: paypalMessage, flags: 64 });
+        
+        // Log payment request
+        try {
+            const logChannel = await client.channels.fetch(modChannel);
+            await logChannel.send(`**💳 PAYPAL REQUEST LOG**\nUser: ${username} (${interaction.user.id})\nTimestamp: ${new Date().toLocaleString()}\nChannel: #${interaction.channel.name} (${interaction.channel.id})`);
+        } catch (error) {
+            console.error('❌ Error logging PayPal request:', error.message);
+        }
+    } catch (error) {
+        console.error('❌ Error handling PayPal command:', error.message);
+        await interaction.reply({ content: "❌ Could not retrieve payment information. Please try again.", flags: 64 });
+    }
+}
+
+// Handle QR/UPI command
+async function handleQRCommand(interaction) {
+    const username = interaction.user.username || "Unknown User";
+    
+    try {
+        const upiMessage = `\`\`\`ansi
+\u001b[32m📱 UPI PAYMENT GATEWAY
+\u001b[32m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+\u001b[32m[SYSTEM] Secure UPI connection established
+\u001b[32m[INFO] Payment Method: UPI/QR Code
+\u001b[32m[UPI ID] davidbarma19-4@okicici
+\u001b[32m[STATUS] Connection secure ✓
+\u001b[32m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+\`\`\``;
+        
+        await interaction.reply({ content: upiMessage, flags: 64 });
+        
+        // Log UPI request
+        try {
+            const logChannel = await client.channels.fetch(modChannel);
+            await logChannel.send(`**📱 UPI REQUEST LOG**\nUser: ${username} (${interaction.user.id})\nTimestamp: ${new Date().toLocaleString()}\nChannel: #${interaction.channel.name} (${interaction.channel.id})`);
+        } catch (error) {
+            console.error('❌ Error logging UPI request:', error.message);
+        }
+    } catch (error) {
+        console.error('❌ Error handling QR command:', error.message);
+        await interaction.reply({ content: "❌ Could not retrieve payment information. Please try again.", flags: 64 });
+    }
+}
+
+// Auction System Handlers
+
+// Handle application command
+async function handleApplyCommand(interaction) {
+    const type = interaction.options.getString('type');
+    const realName = interaction.options.getString('real_name');
+    const citizenId = interaction.options.getString('citizen_id');
+    const profilePicture = interaction.options.getAttachment('profile_picture');
+    const userId = interaction.user.id;
+    const username = interaction.user.username;
+
+    try {
+        // Check if user already has an application pending or approved
+        const existingApplication = await executeQuery(
+            'SELECT * FROM applications WHERE user_id = $1 AND status IN ($2, $3)',
+            [userId, 'pending', 'approved']
+        );
+
+        if (existingApplication.rows.length > 0) {
+            const status = existingApplication.rows[0].status;
+            await interaction.reply({ 
+                content: `❌ You already have a ${status} application. Please wait for admin review.`, 
+                flags: 64 
+            });
+            return;
+        }
+
+        const applicationId = uuidv4();
+        
+        // Insert application into database
+        await executeQuery(
+            'INSERT INTO applications (id, user_id, username, real_name, citizen_id, profile_picture_url, type) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+            [applicationId, userId, username, realName, citizenId, profilePicture.url, type]
+        );
+
+        // Send application to admin channel
+        const applicationChannel = await client.channels.fetch("1406725485831913545");
+        
+        const applicationEmbed = `\`\`\`ansi
+\u001b[32m📋 NEW ${type.toUpperCase()} APPLICATION
+\u001b[32m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+\u001b[32m[ID] ${applicationId}
+\u001b[32m[USER] ${username} (${userId})
+\u001b[32m[TYPE] ${type}
+\u001b[32m[NAME] ${realName}
+\u001b[32m[CITIZEN ID] ${citizenId}
+\u001b[32m[SUBMITTED] ${new Date().toLocaleString()}
+\u001b[32m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+\u001b[32mProfile Picture: ${profilePicture.url}
+
+\u001b[32mUse /approve ${applicationId} or /deny ${applicationId}
+\`\`\``;
+
+        await applicationChannel.send(applicationEmbed);
+
+        await interaction.reply({
+            content: `✅ Your ${type} application has been submitted! Admins will review it shortly.`,
+            flags: 64
+        });
+
+    } catch (error) {
+        console.error('❌ Error handling application:', error.message);
+        await interaction.reply({
+            content: "❌ Could not submit application. Please try again.",
+            flags: 64
+        });
+    }
+}
+
+// Handle sell command
+async function handleSellCommand(interaction) {
+    const title = interaction.options.getString('title');
+    const description = interaction.options.getString('description');
+    const startingPrice = interaction.options.getNumber('starting_price');
+    const image = interaction.options.getAttachment('image');
+    const userId = interaction.user.id;
+
+    try {
+        // Check if user is approved seller
+        const userCheck = await executeQuery(
+            'SELECT * FROM users WHERE id = $1 AND status = $2 AND (type = $3 OR type = $4)',
+            [userId, 'approved', 'seller', 'both']
+        );
+
+        if (userCheck.rows.length === 0) {
+            await interaction.reply({
+                content: "❌ You must be an approved seller to list items. Use /apply first.",
+                flags: 64
+            });
+            return;
+        }
+
+        const itemId = uuidv4();
+        
+        // Insert item into database
+        await executeQuery(
+            'INSERT INTO items (id, seller_id, title, description, starting_price, current_price, image_url) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+            [itemId, userId, title, description, startingPrice, startingPrice, image.url]
+        );
+
+        // Send item to admin channel for approval
+        const applicationChannel = await client.channels.fetch("1406725485831913545");
+        
+        const itemEmbed = `\`\`\`ansi
+\u001b[32m🛍️ NEW ITEM SUBMISSION
+\u001b[32m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+\u001b[32m[ITEM ID] ${itemId}
+\u001b[32m[SELLER] ${interaction.user.username} (${userId})
+\u001b[32m[TITLE] ${title}
+\u001b[32m[PRICE] $${startingPrice}
+\u001b[32m[SUBMITTED] ${new Date().toLocaleString()}
+\u001b[32m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+\u001b[32m[DESCRIPTION] ${description}
+
+\u001b[32mImage: ${image.url}
+
+\u001b[32mUse /approve ${itemId} or /deny ${itemId}
+\`\`\``;
+
+        await applicationChannel.send(itemEmbed);
+
+        await interaction.reply({
+            content: `✅ Your item "${title}" has been submitted for admin approval!`,
+            flags: 64
+        });
+
+    } catch (error) {
+        console.error('❌ Error handling sell command:', error.message);
+        await interaction.reply({
+            content: "❌ Could not submit item. Please try again.",
+            flags: 64
+        });
+    }
+}
+
+// Handle bid command
+async function handleBidCommand(interaction) {
+    const itemId = interaction.options.getString('item_id');
+    const amount = interaction.options.getNumber('amount');
+    const userId = interaction.user.id;
+
+    try {
+        // Check if user is approved buyer
+        const userCheck = await executeQuery(
+            'SELECT * FROM users WHERE id = $1 AND status = $2 AND (type = $3 OR type = $4)',
+            [userId, 'approved', 'buyer', 'both']
+        );
+
+        if (userCheck.rows.length === 0) {
+            await interaction.reply({
+                content: "❌ You must be an approved buyer to place bids. Use /apply first.",
+                flags: 64
+            });
+            return;
+        }
+
+        // Check if item exists and is active
+        const itemCheck = await executeQuery(
+            'SELECT * FROM items WHERE id = $1 AND status = $2',
+            [itemId, 'active']
+        );
+
+        if (itemCheck.rows.length === 0) {
+            await interaction.reply({
+                content: "❌ Item not found or auction has ended.",
+                flags: 64
+            });
+            return;
+        }
+
+        const item = itemCheck.rows[0];
+        
+        // Check if bid is higher than current price
+        if (amount <= parseFloat(item.current_price)) {
+            await interaction.reply({
+                content: `❌ Bid must be higher than current price: $${item.current_price}`,
+                flags: 64
+            });
+            return;
+        }
+
+        const bidId = uuidv4();
+        
+        // Insert bid
+        await executeQuery(
+            'INSERT INTO bids (id, item_id, bidder_id, amount) VALUES ($1, $2, $3, $4)',
+            [bidId, itemId, userId, amount]
+        );
+
+        // Update item current price
+        await executeQuery(
+            'UPDATE items SET current_price = $1 WHERE id = $2',
+            [amount, itemId]
+        );
+
+        // Update auction message if exists
+        if (item.channel_message_id) {
+            try {
+                const auctionChannelObj = await client.channels.fetch(auctionChannel);
+                const message = await auctionChannelObj.messages.fetch(item.channel_message_id);
+                
+                const updatedEmbed = await createAuctionEmbed(item, amount, interaction.user.username);
+                await message.edit({ content: updatedEmbed });
+            } catch (error) {
+                console.error('❌ Error updating auction message:', error.message);
+            }
+        }
+
+        await interaction.reply({
+            content: `✅ Bid placed successfully! Current highest bid: $${amount}`,
+            flags: 64
+        });
+
+    } catch (error) {
+        console.error('❌ Error handling bid:', error.message);
+        await interaction.reply({
+            content: "❌ Could not place bid. Please try again.",
+            flags: 64
+        });
+    }
+}
+
+// Handle approve command
+async function handleApproveCommand(interaction) {
+    // Check if user is admin
+    if (!interaction.member?.roles.cache.has(adminRoleId)) {
+        await interaction.reply({
+            content: "❌ You don't have permission to approve applications.",
+            flags: 64
+        });
+        return;
+    }
+
+    const id = interaction.options.getString('id');
+
+    try {
+        // Try to approve application first
+        const applicationCheck = await executeQuery(
+            'SELECT * FROM applications WHERE id = $1',
+            [id]
+        );
+
+        if (applicationCheck.rows.length > 0) {
+            const app = applicationCheck.rows[0];
+            
+            // Update application status
+            await executeQuery(
+                'UPDATE applications SET status = $1, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $2 WHERE id = $3',
+                ['approved', interaction.user.id, id]
+            );
+
+            // Insert or update user record
+            await executeQuery(
+                'INSERT INTO users (id, username, real_name, citizen_id, profile_picture_url, status, type, approved_at, approved_by) VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, $8) ON CONFLICT (id) DO UPDATE SET status = $6, type = $7, approved_at = CURRENT_TIMESTAMP, approved_by = $8',
+                [app.user_id, app.username, app.real_name, app.citizen_id, app.profile_picture_url, 'approved', app.type, interaction.user.id]
+            );
+
+            await interaction.reply({
+                content: `✅ ${app.type} application approved for ${app.username}`,
+                flags: 64
+            });
+            return;
+        }
+
+        // Try to approve item
+        const itemCheck = await executeQuery(
+            'SELECT * FROM items WHERE id = $1',
+            [id]
+        );
+
+        if (itemCheck.rows.length > 0) {
+            const item = itemCheck.rows[0];
+            
+            // Set expiration time (24 hours from now)
+            const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+            
+            // Update item status
+            await executeQuery(
+                'UPDATE items SET status = $1, approved_at = CURRENT_TIMESTAMP, expires_at = $2 WHERE id = $3',
+                ['active', expiresAt, id]
+            );
+
+            // Post item to auction channel
+            const auctionChannelObj = await client.channels.fetch(auctionChannel);
+            const auctionEmbed = await createAuctionEmbed(item, item.starting_price, null);
+            const message = await auctionChannelObj.send(auctionEmbed);
+
+            // Update item with message ID
+            await executeQuery(
+                'UPDATE items SET channel_message_id = $1 WHERE id = $2',
+                [message.id, id]
+            );
+
+            await interaction.reply({
+                content: `✅ Item "${item.title}" approved and listed for auction!`,
+                flags: 64
+            });
+
+            // Schedule automatic deletion after 24 hours
+            scheduleItemExpiration(id, expiresAt);
+            return;
+        }
+
+        await interaction.reply({
+            content: "❌ Application or item not found.",
+            flags: 64
+        });
+
+    } catch (error) {
+        console.error('❌ Error handling approval:', error.message);
+        await interaction.reply({
+            content: "❌ Could not process approval. Please try again.",
+            flags: 64
+        });
+    }
+}
+
+// Handle deny command
+async function handleDenyCommand(interaction) {
+    // Check if user is admin
+    if (!interaction.member?.roles.cache.has(adminRoleId)) {
+        await interaction.reply({
+            content: "❌ You don't have permission to deny applications.",
+            flags: 64
+        });
+        return;
+    }
+
+    const id = interaction.options.getString('id');
+    const reason = interaction.options.getString('reason') || 'No reason provided';
+
+    try {
+        // Try to deny application first
+        const applicationCheck = await executeQuery(
+            'SELECT * FROM applications WHERE id = $1',
+            [id]
+        );
+
+        if (applicationCheck.rows.length > 0) {
+            await executeQuery(
+                'UPDATE applications SET status = $1, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $2 WHERE id = $3',
+                ['denied', interaction.user.id, id]
+            );
+
+            await interaction.reply({
+                content: `❌ Application denied. Reason: ${reason}`,
+                flags: 64
+            });
+            return;
+        }
+
+        // Try to deny item
+        const itemCheck = await executeQuery(
+            'SELECT * FROM items WHERE id = $1',
+            [id]
+        );
+
+        if (itemCheck.rows.length > 0) {
+            await executeQuery(
+                'UPDATE items SET status = $1 WHERE id = $2',
+                ['denied', id]
+            );
+
+            await interaction.reply({
+                content: `❌ Item denied. Reason: ${reason}`,
+                flags: 64
+            });
+            return;
+        }
+
+        await interaction.reply({
+            content: "❌ Application or item not found.",
+            flags: 64
+        });
+
+    } catch (error) {
+        console.error('❌ Error handling denial:', error.message);
+        await interaction.reply({
+            content: "❌ Could not process denial. Please try again.",
+            flags: 64
+        });
+    }
+}
+
+// Create auction embed
+async function createAuctionEmbed(item, currentPrice, latestBidder) {
+    const timeLeft = item.expires_at ? Math.max(0, new Date(item.expires_at) - new Date()) : 0;
+    const hours = Math.floor(timeLeft / (1000 * 60 * 60));
+    const minutes = Math.floor((timeLeft % (1000 * 60 * 60)) / (1000 * 60));
+
+    return `\`\`\`ansi
+\u001b[32m🏪 AUCTION ITEM
+\u001b[32m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+\u001b[32m[ITEM ID] ${item.id}
+\u001b[32m[TITLE] ${item.title}
+\u001b[32m[STARTING PRICE] $${item.starting_price}
+\u001b[32m[CURRENT BID] $${currentPrice}
+\u001b[32m[TIME LEFT] ${hours}h ${minutes}m
+${latestBidder ? `\u001b[32m[LATEST BIDDER] ${latestBidder}` : ''}
+\u001b[32m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+\u001b[32m[DESCRIPTION] ${item.description}
+
+\u001b[32mImage: ${item.image_url}
+
+\u001b[32mUse /bid ${item.id} <amount> to place a bid
+\`\`\``;
+}
+
+// Schedule item expiration
+function scheduleItemExpiration(itemId, expiresAt) {
+    const timeUntilExpiration = new Date(expiresAt) - new Date();
+    
+    if (timeUntilExpiration > 0) {
+        // Schedule 5-minute warning
+        const warningTime = timeUntilExpiration - (5 * 60 * 1000);
+        if (warningTime > 0) {
+            setTimeout(async () => {
+                await sendExpirationWarning(itemId);
+            }, warningTime);
+        }
+
+        // Schedule expiration
+        setTimeout(async () => {
+            await expireItem(itemId);
+        }, timeUntilExpiration);
+    }
+}
+
+// Send expiration warning
+async function sendExpirationWarning(itemId) {
+    try {
+        const itemCheck = await executeQuery(
+            'SELECT * FROM items WHERE id = $1 AND status = $2',
+            [itemId, 'active']
+        );
+
+        if (itemCheck.rows.length > 0) {
+            const item = itemCheck.rows[0];
+            const auctionChannelObj = await client.channels.fetch(auctionChannel);
+            
+            const warningMessage = `\`\`\`ansi
+\u001b[31m⚠️  AUCTION ENDING SOON
+\u001b[31m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+\u001b[31m[ITEM] ${item.title}
+\u001b[31m[CURRENT BID] $${item.current_price}
+\u001b[31m[TIME LEFT] 5 minutes!
+\u001b[31m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+\u001b[31mLast chance to bid!
+\`\`\``;
+
+            await auctionChannelObj.send(warningMessage);
+        }
+    } catch (error) {
+        console.error('❌ Error sending expiration warning:', error.message);
+    }
+}
+
+// Expire item
+async function expireItem(itemId) {
+    try {
+        const itemCheck = await executeQuery(
+            'SELECT * FROM items WHERE id = $1 AND status = $2',
+            [itemId, 'active']
+        );
+
+        if (itemCheck.rows.length > 0) {
+            const item = itemCheck.rows[0];
+            
+            // Get highest bid
+            const highestBid = await executeQuery(
+                'SELECT * FROM bids WHERE item_id = $1 ORDER BY amount DESC LIMIT 1',
+                [itemId]
+            );
+
+            // Update item status
+            await executeQuery(
+                'UPDATE items SET status = $1 WHERE id = $2',
+                [highestBid.rows.length > 0 ? 'sold' : 'expired', itemId]
+            );
+
+            // Send completion message
+            const auctionChannelObj = await client.channels.fetch(auctionChannel);
+            
+            if (highestBid.rows.length > 0) {
+                const winnerBid = highestBid.rows[0];
+                const winner = await executeQuery(
+                    'SELECT * FROM users WHERE id = $1',
+                    [winnerBid.bidder_id]
+                );
+
+                const completionMessage = `\`\`\`ansi
+\u001b[33m🎉 AUCTION COMPLETED
+\u001b[33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+\u001b[33m[ITEM] ${item.title}
+\u001b[33m[WINNING BID] $${winnerBid.amount}
+\u001b[33m[WINNER] ${winner.rows[0]?.username || 'Unknown'}
+\u001b[33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+\u001b[33mCongratulations! Contact details will be shared privately.
+\`\`\``;
+
+                await auctionChannelObj.send(completionMessage);
+            } else {
+                const completionMessage = `\`\`\`ansi
+\u001b[31m❌ AUCTION ENDED
+\u001b[31m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+\u001b[31m[ITEM] ${item.title}
+\u001b[31m[FINAL PRICE] No bids received
+\u001b[31m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+\u001b[31mItem expired without any bids.
+\`\`\``;
+
+                await auctionChannelObj.send(completionMessage);
+            }
+
+            // Delete original auction message
+            if (item.channel_message_id) {
+                try {
+                    const message = await auctionChannelObj.messages.fetch(item.channel_message_id);
+                    await message.delete();
+                } catch (error) {
+                    console.error('❌ Error deleting auction message:', error.message);
+                }
+            }
+        }
+    } catch (error) {
+        console.error('❌ Error expiring item:', error.message);
+    }
+}
+
+// Restart bot after 24 hours with countdown
+function scheduleRestart() {
+    const restartTime = 24 * 60 * 60 * 1000; // 24 hours
+    const warningTime = restartTime - (5 * 60 * 1000); // 5 minutes before restart
+    
+    setTimeout(async () => {
+        try {
+            const auctionChannelObj = await client.channels.fetch(auctionChannel);
+            let countdown = 5;
+            
+            const countdownInterval = setInterval(async () => {
+                const countdownMessage = `\`\`\`ansi
+\u001b[31m🔄 SYSTEM RESTART WARNING
+\u001b[31m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+\u001b[31m[WARNING] Bot will restart in ${countdown} minute${countdown !== 1 ? 's' : ''}
+\u001b[31m[REASON] Scheduled maintenance
+\u001b[31m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+\u001b[31mActive auctions will be preserved
+\`\`\``;
+
+                await auctionChannelObj.send(countdownMessage);
+                countdown--;
+                
+                if (countdown < 0) {
+                    clearInterval(countdownInterval);
+                    process.exit(0); // This will trigger a restart in most hosting environments
+                }
+            }, 60000); // Every minute
+            
+        } catch (error) {
+            console.error('❌ Error during restart countdown:', error.message);
+        }
+    }, warningTime);
+}
+
+// Initialize restart scheduler
+scheduleRestart();
+
+// Start the bot
+client.login(token);
+
+// Start Express server for health checks
+app.get('/', (req, res) => {
+    res.json({ 
+        status: 'Bot is running',
+        uptime: process.uptime(),
+        timestamp: new Date().toISOString()
+    });
+});
+
+app.listen(8000, '0.0.0.0', () => {
+    console.log('🌐 Health check server running on port 8000');
+});
