@@ -18,7 +18,7 @@ const superAdminIds = ["959692217885294632"]; // Super admin user IDs with full 
 const modChannel = process.env.MOD_CHANNEL || "1406548297002258462"; // Default log channel
 const applicationChannel = "1406725485831913545"; // Applications review channel
 const auctionChannel = process.env.AUCTION_CHANNEL || anonymousChannel; // Auction listings channel
-const token = "MTQwNjUyOTkyNDM4MjA2NDc2MQ.GLS5WF.fVBZiRyXkU9QgUqyCzZnWNR2OI7I9CwvhitjoI";
+const token = "";
 
 // Blocked words list - profanity filter
 const blockedWords = [
