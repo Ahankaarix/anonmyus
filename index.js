@@ -87,6 +87,7 @@ function generateHackerUserId() {
 // Resize image to 150x150 using Sharp
 async function resizeImageTo150x150(imageUrl) {
     try {
+        console.log(`🔄 Fetching image from: ${imageUrl}`);
         const response = await fetch(imageUrl);
         if (!response.ok) {
             console.error('❌ Failed to fetch image:', response.status);
@@ -94,11 +95,16 @@ async function resizeImageTo150x150(imageUrl) {
         }
         
         const imageBuffer = await response.buffer();
+        console.log(`📐 Resizing image to 150x150...`);
         const resizedBuffer = await sharp(imageBuffer)
-            .resize(150, 150, { fit: 'cover' })
-            .jpeg({ quality: 80 })
+            .resize(150, 150, { 
+                fit: 'cover',
+                position: 'center'
+            })
+            .jpeg({ quality: 85 })
             .toBuffer();
         
+        console.log(`✅ Image resized successfully, size: ${resizedBuffer.length} bytes`);
         return resizedBuffer;
     } catch (error) {
         console.error('❌ Error resizing image:', error.message);
@@ -976,8 +982,8 @@ async function handleSellCommand(interaction) {
         return;
     }
 
-    // Validate and process image
-    if (!image || !image.contentType?.startsWith('image/')) {
+    // Validate profile picture
+    if (!profilePicture || !profilePicture.contentType?.startsWith('image/')) {
         await interaction.reply({ 
             content: `\`\`\`ansi
 \u001b[31m[ERROR] >> Invalid image file
@@ -1222,7 +1228,7 @@ async function handleApplyCommand(interaction) {
     const username = interaction.user.username || "Unknown User";
 
     // Check if user already has pending application
-    if (pendingApplications.has(userId)) {
+    if (userApplications.has(userId)) {
         await interaction.reply({ 
             content: `\`\`\`ansi
 \u001b[33m[PENDING] >> Application already submitted
@@ -1267,7 +1273,7 @@ async function handleApplyCommand(interaction) {
         userApplications.set(userId, applicationId);
 
         // Send application to approval channel with buttons
-        const approvalChannel = await client.channels.fetch("1406725485831913545");
+        const approvalChannel = await client.channels.fetch(applicationChannel);
         const applicationMessage = `\`\`\`ansi
 \u001b[33m[NEW_APPLICATION] >> VERIFICATION REQUEST
 \u001b[33m[USERNAME] :: ${username}
@@ -1295,15 +1301,23 @@ async function handleApplyCommand(interaction) {
         // Resize profile picture to 150x150
         const resizedProfileBuffer = await resizeImageTo150x150(profilePicture.url);
         
-        await approvalChannel.send({
+        const messageData = {
             content: applicationMessage,
-            files: resizedProfileBuffer ? [{
+            components: [approvalButtons]
+        };
+
+        // Add image file
+        if (resizedProfileBuffer) {
+            messageData.files = [{
                 attachment: resizedProfileBuffer,
                 name: `profile_${applicationId}_150x150.jpg`,
                 description: `Resized profile picture for ${fullname}`
-            }] : [profilePicture.url],
-            components: [approvalButtons]
-        });
+            }];
+        } else {
+            messageData.files = [profilePicture.url];
+        }
+
+        const sentMessage = await approvalChannel.send(messageData);
 
         await interaction.reply({ 
             content: `\`\`\`ansi
@@ -1326,13 +1340,21 @@ async function handleApplyCommand(interaction) {
 
     } catch (error) {
         console.error('❌ Error handling apply command:', error.message);
-        await interaction.reply({ content: "❌ Could not submit application. Please try again.", flags: 64 });
+        console.error('Error details:', error);
+        
+        if (!interaction.replied) {
+            await interaction.reply({ content: "❌ Could not submit application. Please try again.", flags: 64 });
+        } else {
+            await interaction.followUp({ content: "❌ Could not submit application. Please try again.", flags: 64 });
+        }
     }
 }
 
 // Handle button interactions
 async function handleButtonInteraction(interaction) {
     try {
+        console.log(`🔘 Button interaction received: ${interaction.customId} from ${interaction.user.username}`);
+        
         // Acknowledge the interaction immediately to prevent timeout
         await interaction.deferUpdate();
         
@@ -1450,6 +1472,7 @@ async function handleButtonInteraction(interaction) {
 
             } catch (error) {
                 console.error('❌ Error handling button interaction:', error.message);
+                console.error('Error details:', error);
                 try {
                     await interaction.followUp({ content: "❌ Could not process application. Please try again.", flags: 64 });
                 } catch (followUpError) {
@@ -1459,6 +1482,7 @@ async function handleButtonInteraction(interaction) {
         }
     } catch (mainError) {
         console.error('❌ Error in button interaction handler:', mainError.message);
+        console.error('Main error details:', mainError);
     }
 }
 
