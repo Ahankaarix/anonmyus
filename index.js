@@ -19,7 +19,7 @@ const modChannel = process.env.MOD_CHANNEL || ""; // Default log channel
 const applicationChannel = "1406725485831913545"; // Applications review channel
 const auctionChannel = process.env.AUCTION_CHANNEL || anonymousChannel; // Auction listings channel
 const token = "";
-
+////
 // Blocked words list - profanity filter
 const blockedWords = [
     "fuck", "fuk", "fck", "fukkk", "f.u.c.k", "fucc", "fuxk",
