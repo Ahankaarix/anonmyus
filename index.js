@@ -15,7 +15,7 @@ const adminRoleId = process.env.ADMIN_ROLE_ID || "1210529711843708929"; // Role 
 const modChannel = process.env.MOD_CHANNEL || "1406548297002258462"; // Default log channel
 const applicationChannel = "1406725485831913545"; // Applications review channel
 const auctionChannel = process.env.AUCTION_CHANNEL || anonymousChannel; // Auction listings channel
-const token = process.env.DISCORD_BOT_TOKEN;
+const token = "MTQwNjUyOTkyNDM4MjA2NDc2MQ.GLS5WF.fVBZiRyXkU9QgUqyCzZnWNR2OI7I9CwvhitjoI";
 
 // Blocked words list - profanity filter
 const blockedWords = [
