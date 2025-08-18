@@ -77,13 +77,44 @@ function generateAnonUserId() {
     return `${prefix}_${numbers.toString().padStart(3, '0')}`;
 }
 
+// Generate hacker-style user ID for auction system
+function generateHackerUserId() {
+    const prefixes = ['user', 'hacker', 'trader', 'buyer', 'seller', 'agent', 'client'];
+    const numbers = Math.floor(Math.random() * 9999) + 1000;
+    return `${prefixes[Math.floor(Math.random() * prefixes.length)]}${numbers}`;
+}
+
+// Resize image to 150x150 using Sharp
+async function resizeImageTo150x150(imageUrl) {
+    try {
+        const response = await fetch(imageUrl);
+        if (!response.ok) {
+            console.error('❌ Failed to fetch image:', response.status);
+            return null;
+        }
+        
+        const imageBuffer = await response.buffer();
+        const resizedBuffer = await sharp(imageBuffer)
+            .resize(150, 150, { fit: 'cover' })
+            .jpeg({ quality: 80 })
+            .toBuffer();
+        
+        return resizedBuffer;
+    } catch (error) {
+        console.error('❌ Error resizing image:', error.message);
+        return null;
+    }
+}
+
 // In-memory storage for polls (in production, use a database)
 const activePolls = new Map();
 const userVotes = new Map(); // Track user votes to prevent duplicate voting
-const activeAuctions = new Map();
-const approvedUsers = new Set();
-const pendingApplications = new Map();
-const userApplications = new Map();
+
+// In-memory storage for auction system
+const activeAuctions = new Map(); // auctionId -> auction data
+const pendingApplications = new Map(); // applicationId -> application data
+const userApplications = new Map(); // userId -> applicationId
+const approvedUsers = new Set(); // Set of approved user IDs
 
 // Security monitoring
 const securityLogs = new Map();
@@ -124,35 +155,7 @@ function checkSecurityThreat(message, userId) {
     return { threat: false };
 }
 
-// Image resizing function
-async function resizeImageTo150x150(imageUrl) {
-    try {
-        const response = await fetch(imageUrl);
-        if (!response.ok) return null;
-        
-        const buffer = await response.buffer();
-        const resizedBuffer = await sharp(buffer)
-            .resize(150, 150, {
-                fit: 'cover',
-                position: 'center'
-            })
-            .jpeg({ quality: 80 })
-            .toBuffer();
-        
-        return resizedBuffer;
-    } catch (error) {
-        console.error('❌ Error resizing image:', error);
-        return null;
-    }
-}
 
-// Generate hacker-style anonymous user ID for auctions
-function generateHackerUserId() {
-    const prefixes = ['anon', 'ghost', 'shadow', 'cipher', 'void', 'null', 'phantom', 'nexus'];
-    const numbers = Math.floor(Math.random() * 9999) + 1000;
-    const prefix = prefixes[Math.floor(Math.random() * prefixes.length)];
-    return `${prefix}_${numbers}`;
-}
 
 // Validate required environment variables
 if (!token) {
