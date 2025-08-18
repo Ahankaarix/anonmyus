@@ -840,6 +840,19 @@ process.on('uncaughtException', (error) => {
 });
 
 // Start Express server for health checks
+app.get('/', (req, res) => {
+    res.json({ 
+        name: 'Discord Anonymous Bot',
+        status: 'running',
+        uptime: process.uptime(),
+        description: 'Discord bot with anonymous messaging and community features',
+        endpoints: {
+            health: '/health',
+            root: '/'
+        }
+    });
+});
+
 app.get('/health', (req, res) => {
     res.json({ status: 'ok', uptime: process.uptime() });
 });
