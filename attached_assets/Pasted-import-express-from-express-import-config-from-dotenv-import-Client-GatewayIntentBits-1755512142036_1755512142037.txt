@@ -18,7 +18,7 @@ const superAdminIds = ["959692217885294632"]; // Super admin user IDs with full 
 const modChannel = process.env.MOD_CHANNEL || "1406548297002258462"; // Default log channel
 const applicationChannel = "1406725485831913545"; // Applications review channel
 const auctionChannel = process.env.AUCTION_CHANNEL || anonymousChannel; // Auction listings channel
-const token = "MTQwNjUyOTkyNDM4MjA2NDc2MQ.GLS5WF.fVBZiRyXkU9QgUqyCzZnWNR2OI7I9CwvhitjoI";
+const token = process.env.DISCORD_BOT_TOKEN;
 
 // Blocked words list - profanity filter
 const blockedWords = [
@@ -77,13 +77,44 @@ function generateAnonUserId() {
     return `${prefix}_${numbers.toString().padStart(3, '0')}`;
 }
 
+// Check if user has admin permissions (role or super admin)
+function hasAdminPermissions(interaction) {
+    const userId = interaction.user.id;
+    const hasAdminRole = interaction.member?.roles.cache.has(adminRoleId);
+    const isSuperAdmin = superAdminIds.includes(userId);
+    return hasAdminRole || isSuperAdmin;
+}
+
+// Function to automatically resize image to 150x150
+async function resizeImageTo150x150(imageUrl) {
+    try {
+        const response = await fetch(imageUrl);
+        const imageBuffer = await response.buffer();
+        
+        const resizedBuffer = await sharp(imageBuffer)
+            .resize(150, 150, {
+                fit: 'cover',
+                position: 'center'
+            })
+            .jpeg({ quality: 85 })
+            .toBuffer();
+            
+        return resizedBuffer;
+    } catch (error) {
+        console.error('❌ Error resizing image:', error.message);
+        return null;
+    }
+}
+
 // In-memory storage for polls (in production, use a database)
 const activePolls = new Map();
 const userVotes = new Map(); // Track user votes to prevent duplicate voting
+
+// Auction system storage
 const activeAuctions = new Map();
-const approvedUsers = new Set();
-const pendingApplications = new Map();
-const userApplications = new Map();
+const userApplications = new Map(); // Store user applications
+const approvedUsers = new Set(); // Users approved for bidding
+const pendingApplications = new Map(); // Applications awaiting approval
 
 // Security monitoring
 const securityLogs = new Map();
@@ -122,36 +153,6 @@ function checkSecurityThreat(message, userId) {
     }
     
     return { threat: false };
-}
-
-// Image resizing function
-async function resizeImageTo150x150(imageUrl) {
-    try {
-        const response = await fetch(imageUrl);
-        if (!response.ok) return null;
-        
-        const buffer = await response.buffer();
-        const resizedBuffer = await sharp(buffer)
-            .resize(150, 150, {
-                fit: 'cover',
-                position: 'center'
-            })
-            .jpeg({ quality: 80 })
-            .toBuffer();
-        
-        return resizedBuffer;
-    } catch (error) {
-        console.error('❌ Error resizing image:', error);
-        return null;
-    }
-}
-
-// Generate hacker-style anonymous user ID for auctions
-function generateHackerUserId() {
-    const prefixes = ['anon', 'ghost', 'shadow', 'cipher', 'void', 'null', 'phantom', 'nexus'];
-    const numbers = Math.floor(Math.random() * 9999) + 1000;
-    const prefix = prefixes[Math.floor(Math.random() * prefixes.length)];
-    return `${prefix}_${numbers}`;
 }
 
 // Validate required environment variables
@@ -222,10 +223,10 @@ async function clearChannelAndStartup() {
             "\u001b[32m[AUTH] >> Authentication [VERIFIED]",
             "\u001b[32m[AUTH] >> Access Level = ROOT",
             "\u001b[32m",
-            "\u001b[32m┌─────────────────────────────────────┐",
-            "\u001b[32m│   W E L C O M E   B A C K ,         │",
-            "\u001b[32m│   A N O N Y M O U S   O P E R A T I V E │",
-            "\u001b[32m└─────────────────────────────────────┘",
+            "\u001b[32m┌───────────────────────────────────────────────────────────────┐",
+            "\u001b[32m│   W E L C O M E   B A C K ,                                   │",
+            "\u001b[32m│   A N O N Y M O U S   O P E R A T I V E                       │",
+            "\u001b[32m└───────────────────────────────────────────────────────────────┘",
             "\u001b[32m",
             "\u001b[32m[CHK] >> Running system diagnostics...",
             "\u001b[32m        ▸ Proxy Chain [OK]",
@@ -350,6 +351,7 @@ async function registerSlashCommands() {
                 option.setName('profile_picture')
                     .setDescription('Your profile picture for verification')
                     .setRequired(true)),
+
         new SlashCommandBuilder()
             .setName('auctions')
             .setDescription('View active auctions')
@@ -386,8 +388,6 @@ client.once(Events.ClientReady, async () => {
         approvedUsers.add(id);
     });
     console.log(`✅ Super admins granted marketplace access automatically`);
-    if (allowedRoleId) console.log(`🔑 Required role ID: ${allowedRoleId}`);
-    if (adminRoleId) console.log(`👑 Admin role ID: ${adminRoleId}`);
     
     // Clear channel and send startup sequence
     await clearChannelAndStartup();
@@ -822,18 +822,6 @@ async function handlePollResultsCommand(interaction) {
     await interaction.reply(resultsMessage);
 }
 
-// Admin permission check
-function hasAdminPermissions(interaction) {
-    const member = interaction.member;
-    if (!member) return false;
-    
-    // Check if user is super admin
-    if (superAdminIds.includes(interaction.user.id)) return true;
-    
-    // Check if user has admin role
-    return member.roles.cache.has(adminRoleId) || member.permissions.has("Administrator");
-}
-
 // Handle /announce slash command
 async function handleAnnouncementCommand(interaction) {
     // Check if user has admin permissions
@@ -943,6 +931,14 @@ async function handleClearCommand(interaction) {
         console.error('❌ Error clearing channel:', error.message);
         await interaction.reply({ content: "❌ Could not clear channel. Please try again.", flags: 64 });
     }
+}
+
+// Generate hacker-style anonymous user ID for auctions
+function generateHackerUserId() {
+    const prefixes = ['anon', 'ghost', 'shadow', 'cipher', 'void', 'null', 'phantom', 'nexus'];
+    const numbers = Math.floor(Math.random() * 9999) + 1000;
+    const prefix = prefixes[Math.floor(Math.random() * prefixes.length)];
+    return `${prefix}_${numbers}`;
 }
 
 // Handle /sell command - List item for auction
@@ -1502,19 +1498,6 @@ process.on('uncaughtException', (error) => {
 });
 
 // Start Express server for health checks
-app.get('/', (req, res) => {
-    res.json({ 
-        name: 'Discord Anonymous Bot',
-        status: 'running',
-        uptime: process.uptime(),
-        description: 'Discord bot with anonymous messaging and community features',
-        endpoints: {
-            health: '/health',
-            root: '/'
-        }
-    });
-});
-
 app.get('/health', (req, res) => {
     res.json({ status: 'ok', uptime: process.uptime() });
 });
