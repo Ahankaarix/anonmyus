@@ -63,7 +63,7 @@ function containsBlockedWords(text) {
 // Create terminal-style anonymous message
 function createTerminalAnonymousMessage(content) {
     const userId = generateAnonUserId();
-    return `\`\`\`ansi\n\u001b[32m[USER] :: ${userId}: ${content}\n\`\`\``;
+    return `\`\`\`ansi\n\u001b[32m${userId}: ${content}\n\`\`\``;
 }
 
 // Generate automatic anonymous user ID
